@@ -1,0 +1,6 @@
+[submodule "pyAFM"]
+	path = pyAFM
+	url = git@github.com:cmaclell/pyAFM.git
+[submodule "kt_benchmark"]
+	path = kt_benchmark
+	url = git@github.com:theophilegervet/learner-performance-prediction.git
