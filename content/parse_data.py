@@ -10,6 +10,7 @@ import re
 
 import argparse
 from openai_batch import parsed_data2batch_list
+from utils import *
 
 def clean_text(text):
     text = re.sub(r'&#160;', ' ',text)
@@ -242,13 +243,7 @@ def parse_html(data_root, file_path, valid_problems):
         return extract_questions(data_root, file_path, BeautifulSoup(file.read(), 'html.parser'),valid_problems)
 
 
-def get_datashop_transaction(directory_path):
-    for root, dirs, files in os.walk(directory_path):
-        for file in files:
-            if 'tx_All_Data' in file and file.endswith('.txt'):
-                return pd.read_csv(os.path.join(root, file), delimiter='\t', low_memory=False)
-            
-    raise ValueError(f'All Transaction Data is not observed on the desired path: {directory_path}')
+
 
 def traverse_and_parse(data_path, valid_problems):
     parsed_data = []

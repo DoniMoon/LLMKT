@@ -1,0 +1,7 @@
+av
+torchaudio
+transformers
+openai
+numpy
+torch
+kneed
