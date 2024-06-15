@@ -12,20 +12,7 @@ def load_and_save_image(image_path, output_path):
     modified_image = Image.fromarray(data)
     modified_image.save(output_path, 'PNG')
 
-
 def encode_image(image_path):
-    if not os.path.exists(image_path):
-        base_name, ext = os.path.splitext(image_path)
-        directory = os.path.dirname(image_path)
-        files = [f for f in os.listdir(directory) if f.startswith(os.path.basename(base_name)) and f.endswith(ext)]
-        
-        if len(files) == 1:
-            new_image_path = os.path.join(directory, files[0])
-            print(f"Image path not found. Using {new_image_path} instead of {image_path}.")
-            image_path = new_image_path
-        else:
-            raise FileNotFoundError(f"No suitable image found for {image_path}")
-    
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
@@ -39,7 +26,6 @@ def step_part2text(step, part):
         'oli-multiple-choice': f"Choose correct option on {step['key_str']}",
         'oli-image-hotspot': f"Click right hotspot from image on {step['key_str']}",
         'oli-short-answer': f"Write your answer on {step['key_str']}",
-        'oli-text': f"Write your answer on {step['key_str']}",
         'oli-numeric': f"Write your numeric answer on {step['key_str']}",
     }
     text += step_type2explanation[step['step_type']]
@@ -65,44 +51,20 @@ def step_part2text(step, part):
     text += '\nFeedbacks:\n' + '\n'.join([f"{r.get('name')}: {r.get('text')}" for r in part['responses'] if r['class'][0] !='oli-no-response'])
     return text
 
-def find_resources_folder(file_path):
-    current_path = os.path.abspath(file_path)
-    root_path = os.getcwd()
-    while True:
-        parent_path = os.path.dirname(current_path)
-        
-        resources_path = os.path.join(parent_path, 'resources')
-        if os.path.isdir(resources_path):
-            return resources_path
-        
-        if parent_path == current_path or parent_path == root_path:
-            break
-            
-        current_path = parent_path
-    
-    raise FileNotFoundError("'resources' folder is not observed on the desired path.")
-
-def recursive_decompose(images, parsed_list,f_path):
+def recursive_decompose(images, parsed_list):
     
     for idx, content in enumerate(parsed_list):
         if content['type'] == 'text':
             for img_obj in images:
                 if img_obj['key_str'] in content['text']:
-                    image_path = os.path.join(find_resources_folder(f_path), os.path.basename(img_obj['text']))
-                    try:
-                        base64_image = encode_image(image_path)                    
-                    except FileNotFoundError:
-                        print(f"{os.path.basename(image_path)} invalid.")
-                        return recursive_decompose(images, [
-                            ({'type':'text', 'text':c['text'].replace(img_obj['key_str'],'')} if c['type']=='text' else c )
-                            for c in parsed_list
-                        ], f_path)
+                    image_path = './ds507_problem_content_2024_0404_184023/statics_v_1_15-prod-2013-01-10/resources/' + os.path.basename(img_obj['text'])
+                    base64_image = encode_image(image_path)                    
                     if not base64_image:
                         print(f"{os.path.basename(image_path)} is empty.")
                         return recursive_decompose(images, [
                             ({'type':'text', 'text':c['text'].replace(img_obj['key_str'],'')} if c['type']=='text' else c )
                             for c in parsed_list
-                        ], f_path)
+                        ])
                     new_parsed_list = parsed_list[:idx] + [
                         {
                             'type': 'text',
@@ -119,23 +81,21 @@ def recursive_decompose(images, parsed_list,f_path):
                             'text': content['text'].split(img_obj['key_str'])[1]
                         },
                     ]+ parsed_list[idx+1:]
-                    return recursive_decompose(images, new_parsed_list, f_path)
+                    return recursive_decompose(images, new_parsed_list)
     return parsed_list
             
 
-def question_to_prompt(question_obj, f_path):
+def question_to_prompt(question_obj):
     prompts = []
     prompt_contents = [{
             "type": "text",
             "text": "Content:\n\n"+question_obj['question']
     }]
-    prompt_contents = recursive_decompose(question_obj['images'],prompt_contents, f_path)
+    prompt_contents = recursive_decompose(question_obj['images'],prompt_contents)
     for step in question_obj['steps']:
         step_prompt = [_ for _ in prompt_contents]
         matched_part = None
         for part in question_obj['parts']:
-            if 'step_id' not in part:
-                print(json.dumps(question_obj, indent=4),'\n\n',part)
             if part['step_id'] == step['step_id']:
                 matched_part = part
         if not matched_part:
@@ -149,14 +109,13 @@ def question_to_prompt(question_obj, f_path):
         prompts.append(step_prompt)
     return prompts
 
-
 def parsed_data2batch_list(parsed_data):
     batch_list = []
     for idx, question_content in enumerate(parsed_data):
-        user_conts = question_to_prompt(question_content, question_content['file_path'])
+        user_conts = question_to_prompt(question_content)
         for step_idx, user_cont in enumerate(user_conts):
             payload = {
-                "model": "gpt-4o-2024-05-13",
+                "model": "gpt-4-turbo",
                 'response_format':{ "type": "json_object" },
                 'seed': 42,
                 "messages": [
@@ -186,3 +145,11 @@ def parsed_data2batch_list(parsed_data):
             })
 
     return batch_list
+
+if __name__ == '__main__':
+    parsed_data = json.load(open('parsed_steps.json'))
+    batch_list = parsed_data2batch_list(parsed_data)
+    with open('gpt4_batch.jsonl', 'w') as file:
+        for b in batch_list:
+            json_b = json.dumps(b)
+            file.write(json_b + '\n')
