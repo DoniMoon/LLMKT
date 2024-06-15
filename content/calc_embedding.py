@@ -10,7 +10,7 @@ client = OpenAI(api_key = OPENAI_KEY)
 content_path = Path('./')
 
 
-def get_embedding(dset, model='t5'):
+def get_embedding(dset, model='t5', is_single=False):
     jsonl = read_jsonl(content_path / 'resources' / dset/ 'merged_gpt_results.jsonl')
 
     print(f"{dset} : total {len(jsonl)} steps.")
@@ -28,7 +28,24 @@ def get_embedding(dset, model='t5'):
             continue
         
         kcs = []
-        for kc in res['knowledge_components']:
+        raw_kcs = []
+        if is_single:
+            names = []
+            descriptions = []
+            for kc in res['knowledge_components']:
+                if 'description' not in kc or 'name' not in kc:
+                    continue
+                names.append(kc['name'])
+                descriptions.append(kc['description'])
+                
+            combined_kc = {
+                'name': '~~'.join(names),
+                'description': '\n- '.join(['Knowledge required to solve the problem:'] + descriptions)
+            }
+            raw_kcs = [combined_kc]
+        else:
+            raw_kcs = res['knowledge_components']
+        for kc in raw_kcs:
             if 'description' not in kc or 'name' not in kc:
                 print(kc)
                 continue
@@ -53,7 +70,8 @@ def get_embedding(dset, model='t5'):
             'kcs': kcs
         })
     try:
-        json.dump(convert_ndarrays(processed), open(content_path / 'resources'/ dset/ f'processed_{model}_embedings.json','w'))
+        single_postfix = '_single' if is_single else ''
+        json.dump(convert_ndarrays(processed), open(content_path / 'resources'/ dset/ f'processed_{model}{single_postfix}_embedings.json','w'))
     except:
         return processed
     return processed
@@ -79,7 +97,12 @@ if __name__ == '__main__':
         nargs='?',
         help='select embedding model. t5 or openai_3 '
     )
+    parser.add_argument(
+        '--single_kc',
+        action='store_true',
+        help='Disable multiple KCs'
+    )
     args = parser.parse_args()
     target_dsets = [args.dataset] if args.dataset != 'all' else dataset_choices
     for dset in target_dsets:
-        get_embedding(dset,args.model)
+        get_embedding(dset,args.model,args.single_kc)

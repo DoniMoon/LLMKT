@@ -46,9 +46,9 @@ def get_max_skill_num(user_data, skill_name):
 
 def get_test_item_ids(Q_mat, train_test_ratio):
     # if train_test_ratio = 5, train_items : test_items = 5:1
-    budget = 10000
+    budget = 500000
     random.seed(42)
-    for i in range(budget):
+    for i in tqdm(range(budget)):
         test_ids = random.sample(list(range(Q_mat.shape[0])), k=int(Q_mat.shape[0]/(train_test_ratio+1)))
         train_skill_cnt, test_skill_cnt = np.zeros(Q_mat.shape[1]),np.zeros(Q_mat.shape[1])
         for item_id in range(Q_mat.shape[0]):
@@ -62,20 +62,37 @@ def get_test_item_ids(Q_mat, train_test_ratio):
     raise RuntimeError('No suitable test split found')
     
 
-def generate_kt_df(dset, skill_name, is_random=False, is_cold_start=False):
+def get_postfix(args):
+    postfix = args.skill_name.replace("'",'').replace(' ','')
+    if args.zero_shot:
+        postfix += '_0_shot'
+    elif args.few_shot:
+        postfix += f'_{args.few_shot}_shot'
+    if args.single_kc:
+        postfix += '_single'
+    return postfix
+
+def generate_kt_df(dset, args):
     kt_data = []
     invalid_cnt = 0
     item_stack = InputStack()
     integrated_skill_stack = InputStack()
     skill_stack = InputStack()
-    dshop_df = pd.read_csv(os.path.join(content_path,'resources', dset, 'openai_3_datashop_form-rollup.txt'), sep='\t', low_memory=False)
+    if args.single_kc:
+        dshop_df_path = os.path.join(content_path,'resources', dset, 'openai_3_single_datashop_form-rollup.txt')
+    else:
+        dshop_df_path = os.path.join(content_path,'resources', dset, 'openai_3_datashop_form-rollup.txt')
+    if os.path.exists(dshop_df_path):
+        dshop_df = pd.read_csv(dshop_df_path, sep='\t', low_memory=False)
+    else:
+        raise RuntimeError("You need to run pyAFM first.")
     Anon_Id2user_id = {}
 
     for i,aid in enumerate(set(dshop_df['Anon Student Id'])):
         Anon_Id2user_id[aid] = i
 
     item2kcs=dict()
-    max_skill_num = get_max_skill_num(dshop_df, skill_name) if is_random else None
+    max_skill_num = get_max_skill_num(dshop_df, args.skill_name) if args.random else None
     
     for aid in tqdm(list(Anon_Id2user_id.keys())):
         user_data = dshop_df[dshop_df['Anon Student Id'] == aid]
@@ -83,7 +100,7 @@ def generate_kt_df(dset, skill_name, is_random=False, is_cold_start=False):
         user_min_time = min(list(set(convert_to_timestamp(i) for i in user_data['Step End Time'])))
         for i, x in user_data.iterrows():
             item_id = item_stack.add_input((x['Problem Name'],x['Step Name']))            
-            skill_str = nancheck(x[f"KC ({skill_name})"]) if not is_random else str(random.randint(1, max_skill_num))
+            skill_str = str(nancheck(x[f"KC ({args.skill_name})"]) if not args.random else str(random.randint(1, max_skill_num)))
             item2kcs[item_id] = [skill_stack.add_input(s) for s in skill_str.split('~~')]
             kt_data.append({
                 'user_id': Anon_Id2user_id[aid],
@@ -93,16 +110,16 @@ def generate_kt_df(dset, skill_name, is_random=False, is_cold_start=False):
                 'skill_id': integrated_skill_stack.add_input(skill2unique_str(skill_str))
             })
             
-
-
+    print(sorted(list(map(int,skill_stack.stack.keys()))))
+    
     Q_mat = np.zeros((len(list(item_stack.stack.keys())), len(list(skill_stack.stack.keys()))))    
     for item_id, kcs in item2kcs.items():
         for kc in kcs:
             Q_mat[item_id, kc] = 1
 
     l = pd.DataFrame.from_dict(kt_data)    
-    skill_dir_name = skill_name.replace("'",'').replace(' ','')
-    llmkt_path = os.path.join(content_path, '../kt_benchmark/data', f"{dset}_{skill_dir_name}")
+    path_postfix = get_postfix(args)
+    llmkt_path = os.path.join(content_path, '../kt_benchmark/data', f"{dset}_{path_postfix}")
     if not os.path.exists(llmkt_path):
         os.mkdir(llmkt_path)
     sparse.save_npz(os.path.join(llmkt_path, "q_mat.npz"), sparse.csr_matrix(Q_mat))
@@ -114,11 +131,31 @@ def generate_kt_df(dset, skill_name, is_random=False, is_cold_start=False):
     test_user_ids = random.sample(user_ids, k=int(len(user_ids)/6))
     i = l.apply(lambda x: x['user_id'] in test_user_ids, axis=1)
     
-    if is_cold_start:
+    if args.zero_shot:
         test_item_ids = get_test_item_ids(Q_mat, train_test_ratio=5)
         j = l.apply(lambda x: x['item_id'] in test_item_ids, axis=1)
         l[(i==False) & (j==False)].to_csv(os.path.join(llmkt_path, 'preprocessed_data_train.csv'),sep='\t')
         l[(i) & (j)].to_csv(os.path.join(llmkt_path, 'preprocessed_data_test.csv'),sep='\t')
+    elif args.few_shot:
+        test_item_ids = get_test_item_ids(Q_mat, train_test_ratio=5)
+        few_shot_item_indices = []
+
+        j = l.apply(lambda x: x['item_id'] in test_item_ids, axis=1)
+        
+        total_len = 0
+        for item_id in test_item_ids:
+            item_data = l[(l['item_id'] == item_id) & (i == False)]
+            if len(item_data) == 0:
+                continue
+            few_shot_sample_size = max(1, int(len(item_data) * (args.few_shot / 100)))  
+            total_len += len(item_data)
+            few_shot_item_indices.extend(item_data.sample(few_shot_sample_size).index.tolist())
+        print(f'Exact portion: {round(len(few_shot_item_indices) / total_len,3)}')
+        
+        k = l.apply(lambda x: x.name in few_shot_item_indices, axis=1)
+    
+        l[(i == False) & ((j == False) | (k))].to_csv(os.path.join(llmkt_path, 'preprocessed_data_train.csv'), sep='\t')
+        l[(i) & (j)].to_csv(os.path.join(llmkt_path, 'preprocessed_data_test.csv'), sep='\t')
     else:
         l[i==False].to_csv(os.path.join(llmkt_path, 'preprocessed_data_train.csv'),sep='\t')
         l[i].to_csv(os.path.join(llmkt_path, 'preprocessed_data_test.csv'),sep='\t')
@@ -149,11 +186,22 @@ if __name__ == '__main__':
         help='Flag to indicate if random tag selection should be used'
     )
     parser.add_argument(
-        '--item_cold_start',
+        '--zero_shot',
         action='store_true',
         help='Flag to indicate item cold start setting'
+    )
+    parser.add_argument(
+        '--few_shot',
+        type=int,
+        choices=range(1, 101),
+        help='Percentage for few shot learning, e.g., --few_shot 5 for 5%% few shot setting'
+    )
+    parser.add_argument(
+        '--single_kc',
+        action='store_true',
+        help='Disable multiple KCs'
     )
     args = parser.parse_args()
     target_dsets = [args.dataset] if args.dataset != 'all' else dataset_choices
     for dset in target_dsets:
-        generate_kt_df(dset, args.skill_name, args.random, args.item_cold_start)
+        generate_kt_df(dset, args)
